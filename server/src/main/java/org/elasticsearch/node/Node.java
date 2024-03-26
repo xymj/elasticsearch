@@ -326,12 +326,14 @@ public class Node implements Closeable {
         boolean success = false;
         try {
             // Pass the node settings to the DeprecationLogger class so that it can have the deprecation.skip_deprecated_settings setting:
+            // 过时环境参数配置同步到DeprecationLogger类中，以便它可以访问deprecation.skip_deprecated_settings设置
             DeprecationLogger.initialize(initialEnvironment.settings());
             Settings tmpSettings = Settings.builder()
                 .put(initialEnvironment.settings())
                 .put(Client.CLIENT_TYPE_SETTING_S.getKey(), CLIENT_TYPE)
                 .build();
 
+            // 获取jvm信息
             final JvmInfo jvmInfo = JvmInfo.jvmInfo();
             logger.info(
                 "version[{}], pid[{}], build[{}/{}/{}/{}], OS[{}/{}/{}], JVM[{}/{}/{}/{}]",
@@ -404,29 +406,36 @@ public class Node implements Closeable {
                 );
             }
 
+            // 实例化化插件服务
             this.pluginsService = new PluginsService(
-                tmpSettings,
-                initialEnvironment.configFile(),
-                initialEnvironment.modulesFile(),
-                initialEnvironment.pluginsFile(),
-                classpathPlugins
+                tmpSettings, // 环境变量参数
+                initialEnvironment.configFile(), // 配置文件路径
+                initialEnvironment.modulesFile(), // 模块文件路径
+                initialEnvironment.pluginsFile(), // 插件文件路径
+                classpathPlugins // 类路径中的插件
             );
+            // 初始化插件服务后，将插件服务的更新后的设置放入临时设置
             final Settings settings = pluginsService.updatedSettings();
 
+            // 过滤出所有插件对应的发现节点角色
             final Set<DiscoveryNodeRole> additionalRoles = pluginsService.filterPlugins(Plugin.class)
                 .stream()
                 .map(Plugin::getRoles)
                 .flatMap(Set::stream)
                 .collect(Collectors.toSet());
+            // 设置附加的发现节点角色，构建roleName对应与DiscoveryNodeRole的映射关系
             DiscoveryNode.setAdditionalRoles(additionalRoles);
 
             /*
              * Create the environment based on the finalized view of the settings. This is to ensure that components get the same setting
              * values, no matter they ask for them from.
              */
+            // 全局配置环境
             this.environment = new Environment(settings, initialEnvironment.configFile(), Node.NODE_LOCAL_STORAGE_SETTING.get(settings));
             Environment.assertEquivalent(initialEnvironment, this.environment);
+            // 节点配置环境
             nodeEnvironment = new NodeEnvironment(tmpSettings, environment);
+            // 获取节点角色信息
             final Set<String> roleNames = DiscoveryNode.getRolesFromSettings(settings)
                 .stream()
                 .map(DiscoveryNodeRole::roleName)
@@ -440,6 +449,7 @@ public class Node implements Closeable {
             );
             {
                 // are there any legacy settings in use?
+                // 可能遗留角色的配置收集
                 final List<Setting<Boolean>> maybeLegacyRoleSettings = Collections.unmodifiableList(
                     DiscoveryNode.getPossibleRoles()
                         .stream()
@@ -462,37 +472,51 @@ public class Node implements Closeable {
                 }
             }
             resourcesToClose.add(nodeEnvironment);
+            // 本地节点工厂
             localNodeFactory = new LocalNodeFactory(settings, nodeEnvironment.nodeId());
-
+            // 插件服务对应的执行器构建器ExecutorBuilder
             final List<ExecutorBuilder<?>> executorBuilders = pluginsService.getExecutorBuilders(settings);
 
+            // 构建全局线程池，并将线程池注册到资源管理器中，以便在异常时能正确释放资源
             final ThreadPool threadPool = new ThreadPool(settings, executorBuilders.toArray(new ExecutorBuilder<?>[0]));
             resourcesToClose.add(() -> ThreadPool.terminate(threadPool, 10, TimeUnit.SECONDS));
+
+            // 实例化资源观察者服务
             final ResourceWatcherService resourceWatcherService = new ResourceWatcherService(settings, threadPool);
             resourcesToClose.add(resourceWatcherService);
+
             // adds the context to the DeprecationLogger so that it does not need to be injected everywhere
+            // 线程池上下文信息填充到HeaderWarning(This is a simplistic logger that adds warning messages to HTTP headers.)
             HeaderWarning.setThreadContext(threadPool.getThreadContext());
             resourcesToClose.add(() -> HeaderWarning.removeThreadContext(threadPool.getThreadContext()));
 
+            // 收集添加额外配置
             final List<Setting<?>> additionalSettings = new ArrayList<>();
             // register the node.data, node.ingest, node.master, node.remote_cluster_client settings here so we can mark them private
             additionalSettings.add(NODE_DATA_SETTING);
             additionalSettings.add(NODE_INGEST_SETTING);
             additionalSettings.add(NODE_MASTER_SETTING);
             additionalSettings.add(NODE_REMOTE_CLUSTER_CLIENT);
-            additionalSettings.addAll(pluginsService.getPluginSettings());
+            additionalSettings.addAll(pluginsService.getPluginSettings()); // 添加插件配置
             final List<String> additionalSettingsFilter = new ArrayList<>(pluginsService.getPluginSettingsFilter());
             for (final ExecutorBuilder<?> builder : threadPool.builders()) {
-                additionalSettings.addAll(builder.getRegisteredSettings());
+                additionalSettings.addAll(builder.getRegisteredSettings()); // 添加线程池配置
             }
+
+            // 创建在本地节点上执行操作的客户端
             client = new NodeClient(settings, threadPool);
 
+            // 处理脚本插件和默认定义的脚本插件，ScriptModule封装了脚本插件执行上下文和脚本插件执行器
             final ScriptModule scriptModule = new ScriptModule(settings, pluginsService.filterPlugins(ScriptPlugin.class));
+            // 构建脚本服务，管理ScriptModule执行
             final ScriptService scriptService = newScriptService(settings, scriptModule.engines, scriptModule.contexts);
+
+            // 解析AnalysisPlugin，用于构建AnalysisRegistry
             AnalysisModule analysisModule = new AnalysisModule(this.environment, pluginsService.filterPlugins(AnalysisPlugin.class));
             // this is as early as we can validate settings at this point. we already pass them to ScriptModule as well as ThreadPool
             // so we might be late here already
 
+            // 解析注册配置升级转化插件
             final Set<SettingUpgrader<?>> settingsUpgraders = pluginsService.filterPlugins(Plugin.class)
                 .stream()
                 .map(Plugin::getSettingUpgraders)
@@ -505,21 +529,29 @@ public class Node implements Closeable {
                 additionalSettingsFilter,
                 settingsUpgraders
             );
+            // ScriptModule注册集群配置监听器
             scriptModule.registerClusterSettingsListeners(scriptService, settingsModule.getClusterSettings());
+
+            // 实例化网络服务，解析ip地址配置
             final NetworkService networkService = new NetworkService(
                 getCustomNameResolvers(pluginsService.filterPlugins(DiscoveryPlugin.class))
             );
 
+            // 解析集群插件，用于构建ClusterModule
             List<ClusterPlugin> clusterPlugins = pluginsService.filterPlugins(ClusterPlugin.class);
+            // 实例化集群服务并填充相关属性，内部实例化MasterService和ClusterApplierService
             final ClusterService clusterService = new ClusterService(settings, settingsModule.getClusterSettings(), threadPool);
             clusterService.addStateApplier(scriptService);
             resourcesToClose.add(clusterService);
             final Set<Setting<?>> consistentSettings = settingsModule.getConsistentSettings();
             if (consistentSettings.isEmpty() == false) {
+                // 添加本地节点是否为主节点主节点监听器，感知当前本地节点是否为主节点的时间变更
                 clusterService.addLocalNodeMasterListener(
                     new ConsistentSettingsService(settings, clusterService, consistentSettings).newHashPublisher()
                 );
             }
+
+            // 实例化进行多个服务类实例摄取的 Holder 类。
             final IngestService ingestService = new IngestService(
                 clusterService,
                 threadPool,
@@ -529,10 +561,15 @@ public class Node implements Closeable {
                 pluginsService.filterPlugins(IngestPlugin.class),
                 client
             );
+
+
             final SetOnce<RepositoriesService> repositoriesServiceReference = new SetOnce<>();
+            // 实例化集群信息服务
             final ClusterInfoService clusterInfoService = newClusterInfoService(settings, clusterService, threadPool, client);
+            // 实例化监控 Elasticsearch 功能使用情况的服务
             final UsageService usageService = new UsageService();
 
+            // 构造一个新的 SearchModule 对象，注册搜索相关默认组件和插件中包含的搜索相关组件
             SearchModule searchModule = new SearchModule(settings, false, pluginsService.filterPlugins(SearchPlugin.class));
             IndicesModule indicesModule = new IndicesModule(pluginsService.filterPlugins(MapperPlugin.class));
             List<NamedWriteableRegistry.Entry> namedWriteables = Stream.of(

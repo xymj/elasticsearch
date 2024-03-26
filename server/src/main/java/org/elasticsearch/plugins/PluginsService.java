@@ -137,6 +137,7 @@ public class PluginsService implements ReportingService<PluginsAndModules> {
         Set<Bundle> seenBundles = new LinkedHashSet<>();
         List<PluginDescriptor> modulesList = new ArrayList<>();
         // load modules
+        // 解析elasticsearch-7.17.17/modules目录下的所有jar包插件，elasticsearch本身module必须插件，定义方式同插件，解析对应目录下plugin-descriptor.properties和jar
         if (modulesDirectory != null) {
             try {
                 Set<Bundle> modules = getModuleBundles(modulesDirectory);
@@ -150,6 +151,7 @@ public class PluginsService implements ReportingService<PluginsAndModules> {
         }
 
         // now, find all the ones that are in plugins/
+        // 解析elasticsearch-7.17.17/plugins目录下的所有jar包插件，用户自己注入插件，非es原生必须
         if (pluginsDirectory != null) {
             try {
                 // TODO: remove this leniency, but tests bogusly rely on it
@@ -166,7 +168,7 @@ public class PluginsService implements ReportingService<PluginsAndModules> {
                 throw new IllegalStateException("Unable to initialize plugins", ex);
             }
         }
-
+        // 加载插件，实例化对应插件主类
         List<Tuple<PluginDescriptor, Plugin>> loaded = loadBundles(seenBundles);
         pluginsLoaded.addAll(loaded);
 

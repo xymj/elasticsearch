@@ -32,6 +32,7 @@ nbactions.xml
 
 # gradle stuff
 .gradle/
+gradle/
 build/
 
 # vscode stuff

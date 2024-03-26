@@ -355,6 +355,7 @@ final class Bootstrap {
      */
     static void init(final boolean foreground, final Path pidFile, final boolean quiet, final Environment initialEnv)
         throws BootstrapException, NodeValidationException, UserException {
+        // 启动入口
         // force the class initializer for BootstrapInfo to run before
         // the security manager is installed
         BootstrapInfo.init();

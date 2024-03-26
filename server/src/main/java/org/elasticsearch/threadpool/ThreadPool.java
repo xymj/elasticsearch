@@ -189,6 +189,7 @@ public class ThreadPool implements ReportingService<ThreadPoolInfo>, Scheduler {
     public ThreadPool(final Settings settings, final ExecutorBuilder<?>... customBuilders) {
         assert Node.NODE_NAME_SETTING.exists(settings);
 
+        // 按照名称构建不同的线程池builder，便于后面进行线程池创建
         final Map<String, ExecutorBuilder> builders = new HashMap<>();
         final int allocatedProcessors = EsExecutors.allocatedProcessors(settings);
         final int halfProcMaxAt5 = halfAllocatedProcessorsMaxFive(allocatedProcessors);
@@ -256,6 +257,7 @@ public class ThreadPool implements ReportingService<ThreadPoolInfo>, Scheduler {
             new FixedExecutorBuilder(settings, Names.SYSTEM_CRITICAL_WRITE, halfProcMaxAt5, 1500, false)
         );
 
+        // 加载插件内自定义线程池builder
         for (final ExecutorBuilder<?> builder : customBuilders) {
             if (builders.containsKey(builder.name())) {
                 throw new IllegalArgumentException("builder with name [" + builder.name() + "] already exists");
@@ -264,11 +266,15 @@ public class ThreadPool implements ReportingService<ThreadPoolInfo>, Scheduler {
         }
         this.builders = Collections.unmodifiableMap(builders);
 
+        // 解析以request.headers. 为前缀的配置到线程上下文中，用于后面进行线程池创建
         threadContext = new ThreadContext(settings);
 
         final Map<String, ExecutorHolder> executors = new HashMap<>();
         for (final Map.Entry<String, ExecutorBuilder> entry : builders.entrySet()) {
+            // 获取不同线程池build（FixedExecutorBuilder、ScalingExecutorBuilder、AutoQueueAdjustingExecutorBuilder）对应的线程池配置（FixedExecutorBuilder.FixedExecutorSettings、ScalingExecutorBuilder.ScalingExecutorSettings、AutoQueueAdjustingExecutorBuilder.AutoExecutorSettings）
             final ExecutorBuilder.ExecutorSettings executorSettings = entry.getValue().getSettings(settings);
+
+            // 根据线程池配置+线程池上下文，创建ExecutorService和ThreadPool.Info，封装为ThreadPool.ExecutorHolder管理
             final ExecutorHolder executorHolder = entry.getValue().build(executorSettings, threadContext);
             if (executors.containsKey(executorHolder.info.getName())) {
                 throw new IllegalStateException("duplicate executors with name [" + executorHolder.info.getName() + "] registered");
@@ -278,6 +284,7 @@ public class ThreadPool implements ReportingService<ThreadPoolInfo>, Scheduler {
         }
 
         executors.put(Names.SAME, new ExecutorHolder(EsExecutors.DIRECT_EXECUTOR_SERVICE, new Info(Names.SAME, ThreadPoolType.DIRECT)));
+        // 存储所有线程池执行器
         this.executors = unmodifiableMap(executors);
 
         final List<Info> infos = executors.values()
@@ -285,9 +292,12 @@ public class ThreadPool implements ReportingService<ThreadPoolInfo>, Scheduler {
             .filter(holder -> holder.info.getName().equals("same") == false)
             .map(holder -> holder.info)
             .collect(Collectors.toList());
+        // 保存ThreadPool.Info列表
         this.threadPoolInfo = new ThreadPoolInfo(infos);
+        // 创建定时调度线程池
         this.scheduler = Scheduler.initScheduler(settings, "scheduler");
         this.slowSchedulerWarnThresholdNanos = SLOW_SCHEDULER_TASK_WARN_THRESHOLD_SETTING.get(settings).nanos();
+        // 创建一个定时线程池
         this.cachedTimeThread = new CachedTimeThread(
             EsExecutors.threadName(settings, "[timer]"),
             ESTIMATED_TIME_INTERVAL_SETTING.get(settings).millis(),
